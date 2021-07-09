@@ -1,0 +1,8 @@
+( executable
+  (name main)
+  (libraries core csv)
+  (preprocess (pps ppx_jane))
+)
+
+(ocamllex (modules Lexer))
+(ocamlyacc (modules Parser))
