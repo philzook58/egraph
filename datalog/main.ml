@@ -3,7 +3,7 @@ open AST
 
 (*
 gensyms for generating new names
- *)
+*)
 
 let gensym = let counter = ref 0 in
              fun () -> incr counter; AST.Var (Printf.sprintf "Gvar%d" !counter)
@@ -35,35 +35,54 @@ let term_of_lit l = match l with
 let equiv_decl = ".decl equiv(n : number, m:number) eqrel\n"
 let equiv a b = AST.Apply ("equiv", [a; b]) 
 
-(* Dollar increments a genysm counter at datalog runtime *)
+(* Dollar increments a gensym counter at datalog runtime *)
 let dollar : AST.term = Apply ("$", [])
 
+let rec gensyms n = if n > 0 then gensym () :: (gensyms (n-1)) else []
+let sum l = List.fold ~init:0 ~f:(fun a b -> a + b) l
+let rec term_count t = match t with
+ | Apply (_, args) -> sum (List.map ~f:term_count args)
+ | _ -> 0
+let rec repeat n x = if n > 0 then x :: (repeat (n-1) x) else []
+
+let litpos b = List.map ~f:(fun t -> LitPos t) b
+
+let last l = List.hd_exn (List.rev l)
+
+let last_arg t = 
+ match t with
+  | Apply (_f, args) -> last args
+  | _ -> failwith "lastarg bad argument"
+
 (* collect up all the symbols and arity's in a term *)
-let rec symarity (t : term) : (string * int) list =
+let symarity (t : term) : (string * int) list =
+  let rec worker t = 
   match t with
-  | Apply (f, args) -> (f , List.length args) :: List.concat_map ~f:symarity args
+  | Apply (f, args) -> (f , List.length args) :: List.concat_map ~f:worker args
   | _ -> []
+  in
+  List.dedup_and_sort ~compare:[%compare: string * int] (worker t)
 
 
-(*
+(** 
 Build a congurence closure axiom of the form
 equiv(r1,r2) :- f(a,b,c,...,r1), equiv(a,a1), aquiv(b,b1), equiv, f(a1,b2,c1,...,r2)
  *)
 let congruence (head, arity) : AST.clause = 
-   let args1  = gensym () (arity - 1) in
-   let args2 = gensym () (arity - 1) in
-   let equivs = List.map2_exn (fun a b -> equiv a b) args1 args2 in
+   let args1 = gensyms arity in
+   let args2 = gensyms arity in
+   let equivs = List.map2_exn ~f:(fun a b -> equiv a b) args1 args2 in
    let res1 = gensym () in
    let res2 = gensym () in
    let t1 = Apply (head, args1 @ [res1]) in
    let t2 = Apply (head, args2 @ [res2]) in
-   equiv res1 res2, (t1 :: equivs) @ [t2]
+   equiv res1 res2, litpos ((t1 :: equivs) @ [t2])
 
 
 (*  let rec (grounded : )*)
 
-(*
-flat_term take a functional term and flattens it into relational form using generated variables.
+(** 
+[flat_term] take a functional term and flattens it into relational form using generated variables.
 Useful for the right hand side of rules.
  *)
 let rec flat_term (t : AST.term) : AST.term * AST.term list =
@@ -105,13 +124,10 @@ let eq_flat_term t =
 
  *)
 
-let rec gensyms n = if n > 0 then gensym () :: (gensyms (n-1)) else []
-let sum l = List.fold 0 (fun a b -> a + b) l
-let term_count t = match t with
- | Apply (_, args) -> List.sum (List.map ~f:term_count args)
- | _ -> 0
-let rec repeat n x = if n > 0 then x :: (repeat (n-1)) else []
 
+(**
+heads flatten differently because we don't need the equivs between them
+ *)
 
 let rec flat_head (t : AST.term) : AST.term * AST.term list =
   match t with
@@ -124,28 +140,26 @@ let rec flat_head (t : AST.term) : AST.term * AST.term list =
   | Int i ->  Int i, [] 
 
 
-let flat_clause ((head,body) : AST.clause) : AST.clause =
+(** [compile_clause] converts a clause into the pattern finder and instantiater that clause corresponds to *)
+
+let compile_clause ((head,body) : AST.clause) : AST.clause list =
   let head_vars = List.map ~f:(fun v -> Var v) (all_vars head) in
-  let flat_head = flat_head head in
-  let dollars = repeat dollar (List.length flat_head) in
-  let aux_term = genterm () in
-  let aux_head = aux_term (dollars @ head_vars) in
+  let (_, flat_head) = flat_head head in (* TODO: is the head an eq or no? *)
+  let dollars = repeat (List.length flat_head) dollar in
+  let aux_term = genterm () in (* Holds found pattern *)
+  let aux_head = aux_term (dollars @ head_vars) in (* with dollars gensyms *)
   (* eq_flat_term head *)
-  let body = List.concat_map ~f:(fun x -> eq_flat_term (term_of_lit x)) body in
-  let body = List.map ~f:(fun c -> LitPos c) body in 
-  let pat_finder = (aux_head , body) in
-
-  let 
-  let aux_body = aux_term (        @ head_vars) in
+  let body = List.concat_map ~f:(fun x -> eq_flat_term (term_of_lit x)) body in 
+  (* clause that actually finds pattern *)
+  let pat_finder = (aux_head , litpos body) in
+  
+  let aux_vars = List.map ~f:last_arg flat_head in
+  let aux_body = litpos [aux_term ( aux_vars  @ head_vars)] in
   let instans : clause list = List.map ~f:(fun h -> (h, aux_body)) flat_head in
-  pat_find :: instans 
+  pat_finder :: instans 
 
 
 
-
-
-let instantiate (pat : AST.term) (instans : AST.term list) : clause list = 
-  List.map ~f:(fun instan -> ( instan , [head]) ) instans
 
 
 let term_of_string s : Lexing.lexbuf =
@@ -179,7 +193,7 @@ let ast = parse_clause ex
 
 let () = AST.print_clause ast
 let () = Format.print_newline ()
-let () = AST.print_clause (flat_clause ast)
+let () = List.iter ~f:AST.print_clause (flat_clause ast)
 let () = Format.print_newline ()
 
 

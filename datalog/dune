@@ -1,6 +1,6 @@
 ( executable
   (name main)
-  (libraries core csv)
+  (libraries core)
   (preprocess (pps ppx_jane))
 )
 
